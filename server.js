@@ -7,7 +7,7 @@ admin.initializeApp({
     credential: admin.credential.cert(require('./config/serviceAccountKey.json')),
 });
 
-// Initialiser Firestore
+
 const firestore = admin.firestore();
 
 const app = express();

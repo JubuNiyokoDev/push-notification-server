@@ -2,29 +2,29 @@ const admin = require('firebase-admin');
 const express = require('express');
 const bodyParser = require('body-parser');
 
-// Vérifier si la clé de service Firebase est définie
-const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
-if (!serviceAccount) {
-    console.error('La clé de service Firebase n\'est pas définie.');
-    process.exit(1);
-}
+// Vérifier si la clé de service Firebase est définie via les variables d'environnement
+const serviceAccount = {
+    type: process.env.FIREBASE_TYPE,
+    project_id: process.env.FIREBASE_PROJECT_ID,
+    private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+    private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'), // Remplacer les \n
+    client_email: process.env.FIREBASE_CLIENT_EMAIL,
+    client_id: process.env.FIREBASE_CLIENT_ID,
+    auth_uri: process.env.FIREBASE_AUTH_URI,
+    token_uri: process.env.FIREBASE_TOKEN_URI,
+    auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+    client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
+};
 
-// Initialiser Firebase Admin SDK avec la clé depuis la variable d'environnement
-let parsedServiceAccount;
+// Initialiser Firebase Admin SDK avec la clé depuis les variables d'environnement
 try {
-    parsedServiceAccount = JSON.parse(serviceAccount); // Analyser la chaîne JSON
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+    });
 } catch (error) {
-    console.error('Erreur lors de l\'analyse de la clé de service JSON:', error);
+    console.error('Erreur lors de l\'initialisation de Firebase Admin:', error);
     process.exit(1);
 }
-admin.initializeApp({
-    credential: admin.credential.cert({
-        projectId: parsedServiceAccount.project_id,
-        clientEmail: parsedServiceAccount.client_email,
-        privateKey: parsedServiceAccount.private_key.replace(/\\n/g, '\n')
-    })
-});
-
 
 const firestore = admin.firestore();
 const app = express();

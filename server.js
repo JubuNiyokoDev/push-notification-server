@@ -1,14 +1,22 @@
 const admin = require('firebase-admin');
 const express = require('express');
 const bodyParser = require('body-parser');
-
-// Charger les variables d'environnement
 require('dotenv').config();
+// Vérifier si la clé de service Firebase est définie
+const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
+if (!serviceAccount) {
+    console.error('La clé de service Firebase n\'est pas définie.');
+    process.exit(1);
+}
 
 // Initialiser Firebase Admin SDK avec la clé depuis la variable d'environnement
-// const serviceAccount = require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-
+let parsedServiceAccount;
+try {
+    parsedServiceAccount = JSON.parse(serviceAccount); // Analyser la chaîne JSON
+} catch (error) {
+    console.error('Erreur lors de l\'analyse de la clé de service JSON:', error);
+    process.exit(1);
+}
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
 });

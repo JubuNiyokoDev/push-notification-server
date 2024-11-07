@@ -1,125 +1,104 @@
-const express = require('express');
-const http = require('http');
-const WebSocket = require('ws');
 const admin = require('firebase-admin');
+const express = require('express');
+const bodyParser = require('body-parser');
+
+// Initialiser Firebase Admin SDK
+admin.initializeApp({
+    credential: admin.credential.cert(require('./config/serviceAccountKey.json')),
+});
+
+// Initialiser Firestore
+const firestore = admin.firestore();
 
 const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+app.use(bodyParser.json());
 
-const serviceAccount = require('./config/serviceAccountKey.json');
-
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-    databaseURL: "https://tuyage-burundi-default-rtdb.firebaseio.com/",
-});
-
-const firestore = admin.firestore(); // Initialiser Firestore
-
-// Fonction pour mettre à jour le statut des utilisateurs dans Firebase Realtime Database et Firestore
-const updateStatus = async (userId, isOnline) => {
-    try {
-        const statusRef = admin.database().ref(`status/${userId}`);
-        const userDoc = await firestore.collection('users').doc(userId).get();
-        const currentRealtimeStatus = (await statusRef.once('value')).val();
-        const currentFirestoreStatus = userDoc.data();
-
-        const shouldUpdateRealtime = !currentRealtimeStatus || currentRealtimeStatus.active !== isOnline;
-        const shouldUpdateFirestore = !currentFirestoreStatus || currentFirestoreStatus.active !== isOnline;
-
-        if (!shouldUpdateRealtime && !shouldUpdateFirestore) {
-            console.log(`User ${userId} status is already ${isOnline ? 'online' : 'offline'}`);
-            return;
-        }
-
-        const updates = [];
-
-        const currentTimestamp = Date.now();
-
-        if (shouldUpdateRealtime) {
-            const realtimeUpdate = statusRef.set({
-                active: isOnline,
-                lastSeen: currentTimestamp, // Utiliser le timestamp actuel
-            });
-            updates.push(realtimeUpdate);
-        }
-
-        if (shouldUpdateFirestore) {
-            const firestoreUpdate = firestore.collection('users').doc(userId).update({
-                active: isOnline,
-                lastSeen: currentTimestamp, // Utiliser le timestamp actuel
-            });
-            updates.push(firestoreUpdate);
-        }
-
-        await Promise.all(updates);
-
-        console.log(`User ${userId} status updated to ${isOnline ? 'online' : 'offline'}`);
-    } catch (error) {
-        console.error(`Failed to update status for user ${userId}:`, error);
-    }
-};
-
-// Middleware pour traiter les requêtes JSON
-app.use(express.json());
-
-// Route de test
+// Route de test pour vérifier si le serveur est en marche
 app.get('/', (req, res) => {
-    res.send('Server is running');
+    res.send('Serveur de notifications est opérationnel');
 });
 
-// Gestion des connexions WebSocket
-wss.on('connection', (ws) => {
-    console.log('Client connected');
-    let userId;
+// Route pour stocker le token FCM dans Firestore
+app.post('/store-token', async (req, res) => {
+    const { userId, token } = req.body;
 
-    // Envoi de ping périodique
-    const pingInterval = setInterval(() => {
-        ws.ping(); // Envoie un ping au client
-    }, 30000); // 30 secondes
+    // Vérification de la présence des données nécessaires
+    if (!userId || !token) {
+        return res.status(400).send('userId et token sont requis.');
+    }
 
-    ws.on('message', async (message) => {
-        const data = JSON.parse(message);
-        userId = data.userId;
-        const isOnline = data.isOnline;
-        const lastSeen = data.lastSeen; // Récupérer lastSeen du message
-    
-        // Récupérer l'état actuel de l'utilisateur avant de mettre à jour
-        const userStatusRef = admin.database().ref(`status/${userId}`);
-        const userStatusSnapshot = await userStatusRef.once('value');
-        const currentStatus = userStatusSnapshot.val();
-    
-        // Ne mettez à jour que si le statut actuel est 'offline'
-        if (!currentStatus || !currentStatus.active) {
-            await updateStatus(userId, true); // Mettez à jour le statut à 'online'
+    try {
+        // Vérifier si un document existe déjà pour cet utilisateur dans Firestore
+        const userRef = firestore.collection('users').doc(userId);
+        const userDoc = await userRef.get();
+
+        if (!userDoc.exists) {
+            // Si l'utilisateur n'existe pas, on retourne une erreur
+            return res.status(404).send(`Utilisateur avec l'ID ${userId} non trouvé.`);
         } else {
-            // Met à jour lastSeen si l'utilisateur est déjà en ligne
-            await firestore.collection('users').doc(userId).update({
-                lastSeen: lastSeen, // Utiliser lastSeen du message
+            // Si l'utilisateur existe déjà, on ajoute le token à son tableau de tokens
+            await userRef.update({
+                tokens: admin.firestore.FieldValue.arrayUnion(token),
+                updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             });
+            console.log(`Token ajouté pour l'utilisateur ${userId}`);
+            res.status(200).send('Token stocké avec succès');
         }
-    
-        // Répondre avec un pong pour signaler que le serveur est toujours connecté
-        ws.send(JSON.stringify({ type: 'pong' }));
-    });
-    
-
-    ws.on('close', async () => {
-        clearInterval(pingInterval); // Arrêter le ping périodique
-        console.log('Client disconnected');
-        if (userId) {
-            await updateStatus(userId, false); // Met à jour le statut à 'offline'
-            console.log(`User ${userId} status updated to offline on disconnect`);
-        }
-    });
-
-    ws.on('pong', () => {
-        console.log('Received pong from client');
-    });
+    } catch (error) {
+        console.error('Erreur lors du stockage du token:', error);
+        res.status(500).send('Erreur lors du stockage du token');
+    }
 });
 
-// Lancer le serveur sur le port 3000 ou le port défini dans les variables d'environnement
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+// Route pour envoyer des notifications
+app.post('/send-notification', async (req, res) => {
+    const { userId, title, body } = req.body;
+
+    // Vérification des paramètres de la notification
+    if (!userId || !title || !body) {
+        return res.status(400).send('userId, titre et contenu du message sont requis.');
+    }
+
+    try {
+        // Récupérer les tokens de l'utilisateur depuis Firestore
+        const userRef = firestore.collection('users').doc(userId);
+        const userDoc = await userRef.get();
+
+        if (!userDoc.exists) {
+            return res.status(404).send(`Utilisateur avec l'ID ${userId} non trouvé.`);
+        }
+
+        const tokens = userDoc.data().tokens;
+        if (!tokens || tokens.length === 0) {
+            return res.status(400).send('Aucun token disponible pour cet utilisateur.');
+        }
+
+        // Construction du message de notification
+        const message = {
+            notification: {
+                title: title,
+                body: body,
+            },
+            tokens: tokens, // Envoi à tous les tokens de l'utilisateur
+        };
+
+        // Envoi de la notification via Firebase Cloud Messaging
+        const response = await admin.messaging().sendEachForMulticast(message);
+        console.log('Notification envoyée avec succès:', response);
+        res.status(200).send('Notification envoyée');
+        response.responses.forEach((resp, index) => {
+            if (!resp.success) {
+                console.error(`Erreur pour le token ${tokens[index]}:`, resp.error);
+            }
+        });
+    } catch (error) {
+        console.error("Erreur lors de l'envoi de la notification:", error);
+        res.status(500).send("Erreur lors de l'envoi de la notification");
+    }
+});
+
+// Démarrer le serveur sur le port 3000
+const PORT = 3000;
+app.listen(PORT, () => {
+    console.log(`Serveur en cours d'exécution sur le port ${PORT}`);
 });

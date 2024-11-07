@@ -18,8 +18,13 @@ try {
     process.exit(1);
 }
 admin.initializeApp({
-    credential: admin.credential.cert(parsedServiceAccount),
+    credential: admin.credential.cert({
+        projectId: parsedServiceAccount.project_id,
+        clientEmail: parsedServiceAccount.client_email,
+        privateKey: parsedServiceAccount.private_key.replace(/\\n/g, '\n')
+    })
 });
+
 
 const firestore = admin.firestore();
 const app = express();

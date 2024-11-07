@@ -1,13 +1,13 @@
 # Ignorer les fichiers de configuration de l'environnement
 .env
 
-
+# Ignorer les fichiers contenant des clés sensibles
+config/serviceAccountKey.json
 
 # Ignorer les dossiers de dépendances
 /node_modules
 /build
 /dist
-/config
 
 # Ignorer les fichiers temporaires
 *.log

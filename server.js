@@ -1,7 +1,7 @@
 const admin = require('firebase-admin');
 const express = require('express');
 const bodyParser = require('body-parser');
-require('dotenv').config();
+
 // Vérifier si la clé de service Firebase est définie
 const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_KEY;
 if (!serviceAccount) {
@@ -18,7 +18,7 @@ try {
     process.exit(1);
 }
 admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+    credential: admin.credential.cert(parsedServiceAccount),
 });
 
 const firestore = admin.firestore();

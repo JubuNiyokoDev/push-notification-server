@@ -3,7 +3,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 
 // Vérifier si la clé de service Firebase est définie via les variables d'environnement
-console.log(process.env.FIREBASE_PRIVATE_KEY);
+console.log('FIREBASE_PRIVATE_KEY stored in render', process.env.FIREBASE_PRIVATE_KEY);
 const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
 const serviceAccount = {
     type: process.env.FIREBASE_TYPE,
@@ -16,7 +16,9 @@ const serviceAccount = {
     token_uri: process.env.FIREBASE_TOKEN_URI,
     auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
     client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
+    universe_domain: process.env.UNIVERSE_DOMAIN,
 };
+console.log('FIREBASE_PRIVATE_KEY after corrected in render', privateKey);
 
 // Initialiser Firebase Admin SDK avec la clé depuis les variables d'environnement
 try {

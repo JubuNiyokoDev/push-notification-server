@@ -6,7 +6,9 @@ const bodyParser = require('body-parser');
 require('dotenv').config();
 
 // Initialiser Firebase Admin SDK avec la clé depuis la variable d'environnement
+// const serviceAccount = require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
 const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
 });

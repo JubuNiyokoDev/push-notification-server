@@ -3,9 +3,8 @@ const express = require('express');
 const bodyParser = require('body-parser');
 
 // Vérifier si la clé de service Firebase est définie via les variables d'environnement
-const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n').replace(/\s/g, '');
-
-console.log(privateKey);
+console.log(process.env.FIREBASE_PRIVATE_KEY);
+const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
 const serviceAccount = {
     type: process.env.FIREBASE_TYPE,
     project_id: process.env.FIREBASE_PROJECT_ID,

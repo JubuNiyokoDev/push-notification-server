@@ -2,8 +2,14 @@ const cron = require("node-cron");
 const admin = require("firebase-admin");
 const { buildNotification } = require("./notification-templates");
 
-const firestore = admin.firestore();
-const messaging = admin.messaging();
+// Variables lazy-loaded (initialisées après Firebase)
+let firestore;
+let messaging;
+
+function initializeFirebase() {
+  firestore = admin.firestore();
+  messaging = admin.messaging();
+}
 
 // ── Envoyer une notification FCM ─────────────────────────────────────────────
 async function sendPush(userId, type, data = {}) {
@@ -139,6 +145,8 @@ async function analyzeAndNotify() {
 
 // ── Jobs planifiés ────────────────────────────────────────────────────────────
 function startScheduler() {
+  initializeFirebase();
+  
   // Analyse principale : toutes les 2h
   cron.schedule("0 */2 * * *", analyzeAndNotify, {
     timezone: "Africa/Bujumbura",

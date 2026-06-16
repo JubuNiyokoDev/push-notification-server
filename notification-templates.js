@@ -288,7 +288,7 @@ function buildNotification(type, fcmToken, data = {}) {
     android: {
       priority: "high",
       notification: {
-        channelId: "ikigabo_push",
+        channelId: "ikigabo_notifications",
         icon: "launcher_icon",
         color: "#6C63FF",
         clickAction: "FLUTTER_NOTIFICATION_CLICK",

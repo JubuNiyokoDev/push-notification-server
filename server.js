@@ -3,11 +3,28 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const { startScheduler } = require("./notification-scheduler");
 
-// Vérifier si la clé de service Firebase est définie via les variables d'environnement
-console.log(
-  "FIREBASE_PRIVATE_KEY stored in render",
-  process.env.FIREBASE_PRIVATE_KEY,
-);
+const requiredFirebaseEnv = [
+  "FIREBASE_TYPE",
+  "FIREBASE_PROJECT_ID",
+  "FIREBASE_PRIVATE_KEY_ID",
+  "FIREBASE_PRIVATE_KEY",
+  "FIREBASE_CLIENT_EMAIL",
+  "FIREBASE_CLIENT_ID",
+  "FIREBASE_AUTH_URI",
+  "FIREBASE_TOKEN_URI",
+  "FIREBASE_AUTH_PROVIDER_X509_CERT_URL",
+  "FIREBASE_CLIENT_X509_CERT_URL",
+];
+
+const missingFirebaseEnv = requiredFirebaseEnv.filter((key) => !process.env[key]);
+if (missingFirebaseEnv.length > 0) {
+  console.error(
+    "Variables Firebase manquantes:",
+    missingFirebaseEnv.join(", "),
+  );
+  process.exit(1);
+}
+
 const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n");
 const serviceAccount = {
   type: process.env.FIREBASE_TYPE,
@@ -22,7 +39,6 @@ const serviceAccount = {
   client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
   universe_domain: process.env.UNIVERSE_DOMAIN,
 };
-console.log("FIREBASE_PRIVATE_KEY after corrected in render", privateKey);
 
 // Initialiser Firebase Admin SDK avec la clé depuis les variables d'environnement
 try {
@@ -31,7 +47,6 @@ try {
   });
 } catch (error) {
   console.error("Erreur lors de l'initialisation de Firebase Admin:", error);
-  console.log(serviceAccount.private_key);
   process.exit(1);
 }
 
@@ -133,8 +148,15 @@ app.post("/send-notification", async (req, res) => {
 // Heartbeat : appelé à chaque ouverture d'app Flutter
 app.post("/heartbeat", async (req, res) => {
   try {
-    const { deviceId, fcmToken, platform, lastActiveAt, locale, habits } =
-      req.body;
+    const {
+      deviceId,
+      fcmToken,
+      platform,
+      lastActiveAt,
+      locale,
+      habits,
+      notificationPreferences,
+    } = req.body;
     if (!deviceId || !fcmToken)
       return res.status(400).json({ error: "deviceId et fcmToken requis" });
 
@@ -148,6 +170,7 @@ app.post("/heartbeat", async (req, res) => {
           lastActiveAt: lastActiveAt || Date.now(),
           locale: locale || "fr",
           habits: habits || {},
+          notificationPreferences: notificationPreferences || {},
           updatedAt: Date.now(),
         },
         { merge: true },
@@ -157,6 +180,33 @@ app.post("/heartbeat", async (req, res) => {
     res.json({ ok: true });
   } catch (e) {
     console.error("❌ Heartbeat error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Preferences notifications : respecte les toggles utilisateur cote app.
+app.post("/notification-preferences", async (req, res) => {
+  try {
+    const { deviceId, fcmToken, notificationPreferences } = req.body;
+    if (!deviceId || !notificationPreferences) {
+      return res.status(400).json({ error: "Parametres manquants" });
+    }
+
+    await firestore
+      .collection("pushUsers")
+      .doc(deviceId)
+      .set(
+        {
+          ...(fcmToken ? { fcmToken } : {}),
+          notificationPreferences,
+          updatedAt: Date.now(),
+        },
+        { merge: true },
+      );
+
+    console.log(`⚙️ Preferences notifications mises a jour: ${deviceId}`);
+    res.json({ ok: true });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
@@ -195,7 +245,7 @@ app.get("/stats", async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Serveur en cours d'exécution sur le port ${PORT}`);
 });

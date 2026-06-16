@@ -11,14 +11,55 @@ function initializeFirebase() {
   messaging = admin.messaging();
 }
 
+function canSendType(preferences = {}, type) {
+  if (preferences.pushEnabled === false) return false;
+
+  if (type === "debt_overdue") {
+    return preferences.overdueAlerts !== false;
+  }
+
+  if (type.startsWith("debt_due_")) {
+    return preferences.debtReminders !== false;
+  }
+
+  if (type.startsWith("budget_")) {
+    return preferences.budgetAlerts !== false;
+  }
+
+  if (type === "tip_backup") {
+    return preferences.backupReminders !== false;
+  }
+
+  if (type.startsWith("milestone_")) {
+    return preferences.wealthMilestones !== false;
+  }
+
+  if (
+    type.startsWith("inactivity_") ||
+    type.startsWith("habit_") ||
+    type.startsWith("tip_") ||
+    type.startsWith("streak_") ||
+    type === "year_end"
+  ) {
+    return preferences.smartReminders !== false;
+  }
+
+  return true;
+}
+
 // ── Envoyer une notification FCM ─────────────────────────────────────────────
 async function sendPush(userId, type, data = {}) {
   try {
     const userDoc = await firestore.collection("pushUsers").doc(userId).get();
     if (!userDoc.exists) return;
 
-    const { fcmToken, notifications = {} } = userDoc.data();
+    const {
+      fcmToken,
+      notifications = {},
+      notificationPreferences = {},
+    } = userDoc.data();
     if (!fcmToken) return;
+    if (!canSendType(notificationPreferences, type)) return;
 
     // Cooldown global : pas plus d'1 notification par 4h par user
     const lastSentAt = notifications.lastSentAt || 0;

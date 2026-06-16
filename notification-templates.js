@@ -273,6 +273,14 @@ function getTemplate(type) {
   return list[Math.floor(Math.random() * list.length)];
 }
 
+function stripVisibleEmoji(value) {
+  return String(value || "")
+    .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
+    .replace(/[\uFE0F\u200D]/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 function buildNotification(type, fcmToken, data = {}) {
   const tpl = getTemplate(type);
   if (!tpl) return null;
@@ -282,9 +290,12 @@ function buildNotification(type, fcmToken, data = {}) {
     body = body.replace("{value}", Number(data.value).toLocaleString("fr-FR"));
   if (data.name) body = body.replace("{name}", data.name);
 
+  const title = stripVisibleEmoji(tpl.title);
+  body = stripVisibleEmoji(body);
+
   return {
     token: fcmToken,
-    notification: { title: tpl.title, body },
+    notification: { title, body },
     android: {
       priority: "high",
       notification: {

@@ -16,3 +16,4 @@ config/serviceAccountKey.json
 # Ignorer les fichiers de système
 .DS_Store
 Thumbs.db
+serviceAccountKey.json

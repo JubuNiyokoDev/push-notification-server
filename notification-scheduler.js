@@ -6,9 +6,30 @@ const { buildNotification } = require("./notification-templates");
 let firestore;
 let messaging;
 
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const GLOBAL_COOLDOWN_MS = 18 * HOUR_MS;
+const RESERVATION_MS = 5 * 60 * 1000;
+
 function initializeFirebase() {
   firestore = admin.firestore();
   messaging = admin.messaging();
+}
+
+function localDayKey(timestamp = Date.now()) {
+  // Africa/Bujumbura est UTC+2 toute l'annee.
+  return new Date(timestamp + 2 * HOUR_MS).toISOString().slice(0, 10);
+}
+
+function typeCooldownMs(type) {
+  if (type === "debt_overdue") return 2 * DAY_MS;
+  if (type.startsWith("debt_due_")) return 3 * DAY_MS;
+  if (type.startsWith("budget_")) return 7 * DAY_MS;
+  if (type.startsWith("inactivity_")) return 30 * DAY_MS;
+  if (type.startsWith("habit_")) return 4 * DAY_MS;
+  if (type.startsWith("tip_")) return 6 * DAY_MS;
+  if (type.startsWith("milestone_")) return 3650 * DAY_MS;
+  return 7 * DAY_MS;
 }
 
 function canSendType(preferences = {}, type) {
@@ -47,44 +68,134 @@ function canSendType(preferences = {}, type) {
   return true;
 }
 
-// ── Envoyer une notification FCM ─────────────────────────────────────────────
-async function sendPush(userId, type, data = {}) {
-  try {
-    const userDoc = await firestore.collection("pushUsers").doc(userId).get();
-    if (!userDoc.exists) return;
+async function isCanonicalTokenOwner(userId, fcmToken) {
+  const snapshot = await firestore
+    .collection("pushUsers")
+    .where("fcmToken", "==", fcmToken)
+    .get();
 
+  if (snapshot.size <= 1) return true;
+
+  const canonical = snapshot.docs
+    .map((doc) => ({
+      id: doc.id,
+      updatedAt: Number(doc.data().updatedAt || 0),
+    }))
+    .sort(
+      (a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id),
+    )[0];
+
+  return canonical.id === userId;
+}
+
+async function reserveSendSlot(userId, type) {
+  const userRef = firestore.collection("pushUsers").doc(userId);
+  const now = Date.now();
+
+  return firestore.runTransaction(async (transaction) => {
+    const userDoc = await transaction.get(userRef);
+    if (!userDoc.exists) return null;
+
+    const userData = userDoc.data();
     const {
       fcmToken,
       notifications = {},
       notificationPreferences = {},
-    } = userDoc.data();
-    if (!fcmToken) return;
-    if (!canSendType(notificationPreferences, type)) return;
+    } = userData;
 
-    // Cooldown global : pas plus d'1 notification par 4h par user
-    const lastSentAt = notifications.lastSentAt || 0;
-    const hoursSince = (Date.now() - lastSentAt) / (1000 * 60 * 60);
-    if (hoursSince < 4) return;
+    if (!fcmToken || !canSendType(notificationPreferences, type)) return null;
 
-    const message = buildNotification(type, fcmToken, data);
-    if (!message) return;
+    const pendingUntil = Number(notifications.pendingUntil || 0);
+    if (pendingUntil > now) return null;
+
+    const lastSentAt = Number(notifications.lastSentAt || 0);
+    if (now - lastSentAt < GLOBAL_COOLDOWN_MS) return null;
+
+    const dayKey = localDayKey(now);
+    const sentToday =
+      notifications.dayKey === dayKey
+        ? Number(notifications.sentToday || 0)
+        : 0;
+    if (sentToday >= 1) return null;
+
+    const lastSentByType = notifications.lastSentByType || {};
+    const lastTypeSentAt = Number(lastSentByType[type] || 0);
+    if (now - lastTypeSentAt < typeCooldownMs(type)) return null;
+
+    transaction.update(userRef, {
+      "notifications.pendingType": type,
+      "notifications.pendingUntil": now + RESERVATION_MS,
+    });
+
+    return { fcmToken, dayKey, sentToday };
+  });
+}
+
+async function clearReservation(userId, type) {
+  const userRef = firestore.collection("pushUsers").doc(userId);
+  await firestore.runTransaction(async (transaction) => {
+    const userDoc = await transaction.get(userRef);
+    if (!userDoc.exists) return;
+    const notifications = userDoc.data().notifications || {};
+    if (notifications.pendingType !== type) return;
+    transaction.update(userRef, {
+      "notifications.pendingType": admin.firestore.FieldValue.delete(),
+      "notifications.pendingUntil": admin.firestore.FieldValue.delete(),
+    });
+  });
+}
+
+// ── Envoyer une notification FCM ─────────────────────────────────────────────
+async function sendPush(userId, type, data = {}) {
+  let reserved = false;
+  try {
+    const userDoc = await firestore.collection("pushUsers").doc(userId).get();
+    if (!userDoc.exists) return false;
+
+    const { fcmToken } = userDoc.data();
+    if (!fcmToken) return false;
+    if (!(await isCanonicalTokenOwner(userId, fcmToken))) return false;
+
+    const slot = await reserveSendSlot(userId, type);
+    if (!slot) return false;
+    reserved = true;
+
+    const notificationId = `server_${type}_${slot.dayKey}`;
+    const message = buildNotification(type, fcmToken, {
+      ...data,
+      notificationId,
+    });
+    if (!message) {
+      await clearReservation(userId, type);
+      return false;
+    }
 
     await messaging.send(message);
 
-    // Enregistrer l'envoi
+    const sentAt = Date.now();
     await firestore
       .collection("pushUsers")
       .doc(userId)
       .update({
-        "notifications.lastSentAt": Date.now(),
+        "notifications.lastSentAt": sentAt,
         "notifications.lastType": type,
+        [`notifications.lastSentByType.${type}`]: sentAt,
+        "notifications.dayKey": slot.dayKey,
+        "notifications.sentToday": slot.sentToday + 1,
+        "notifications.pendingType": admin.firestore.FieldValue.delete(),
+        "notifications.pendingUntil": admin.firestore.FieldValue.delete(),
         "notifications.sentCount": admin.firestore.FieldValue.increment(1),
       });
 
     console.log(`✅ Push envoyé [${type}] → ${userId}`);
+    return true;
   } catch (e) {
+    if (reserved) {
+      try {
+        await clearReservation(userId, type);
+      } catch (_) {}
+    }
     if (e.code === "messaging/registration-token-not-registered") {
-      // Token invalide → supprimer
       await firestore
         .collection("pushUsers")
         .doc(userId)
@@ -93,6 +204,7 @@ async function sendPush(userId, type, data = {}) {
     } else {
       console.error(`❌ Push failed [${type}] → ${userId}:`, e.message);
     }
+    return false;
   }
 }
 
@@ -105,42 +217,11 @@ async function analyzeAndNotify() {
   for (const doc of snapshot.docs) {
     const userId = doc.id;
     const data = doc.data();
-    const { habits = {}, lastActiveAt = 0, notifications = {} } = data;
+    const { habits = {}, lastActiveAt = 0 } = data;
 
     const inactiveDays = (now - lastActiveAt) / (1000 * 60 * 60 * 24);
-    const lastType = notifications.lastType || "";
-
-    // ── Inactivité (priorité décroissante) ──────────────────────────────────
-    if (inactiveDays >= 30 && lastType !== "inactivity_30days") {
-      await sendPush(userId, "inactivity_30days");
-    } else if (
-      inactiveDays >= 14 &&
-      inactiveDays < 30 &&
-      lastType !== "inactivity_14days"
-    ) {
-      await sendPush(userId, "inactivity_14days");
-    } else if (
-      inactiveDays >= 7 &&
-      inactiveDays < 14 &&
-      lastType !== "inactivity_7days"
-    ) {
-      await sendPush(userId, "inactivity_7days");
-    } else if (
-      inactiveDays >= 5 &&
-      inactiveDays < 7 &&
-      lastType !== "inactivity_5days"
-    ) {
-      await sendPush(userId, "inactivity_5days");
-    } else if (
-      inactiveDays >= 3 &&
-      inactiveDays < 5 &&
-      lastType !== "inactivity_3days"
-    ) {
-      await sendPush(userId, "inactivity_3days");
-    }
-
-    // ── Dettes urgentes (actif ou inactif) ──────────────────────────────────
-    else if (habits.debtsOverdue > 0) {
+    // Une seule regle gagne par analyse, de la plus utile a la plus generale.
+    if (habits.debtsOverdue > 0) {
       await sendPush(userId, "debt_overdue", {
         value: habits.totalDebtRemaining,
       });
@@ -148,33 +229,33 @@ async function analyzeAndNotify() {
       await sendPush(userId, "debt_due_3days", {
         value: habits.totalDebtRemaining,
       });
-    }
-
-    // ── Budgets (seulement si actif récemment) ───────────────────────────────
-    else if (inactiveDays < 3 && habits.budgetsOverspent > 0) {
+    } else if (inactiveDays < 3 && habits.budgetsOverspent > 0) {
       await sendPush(userId, "budget_exceeded");
     } else if (inactiveDays < 3 && habits.budgetsNearLimit > 0) {
       await sendPush(userId, "budget_90_percent");
-    }
-
-    // ── Habitude interrompue (actif mais sans transaction récente) ───────────
-    else if (inactiveDays < 3 && habits.avgTransactionsPerWeek >= 3) {
+    } else if (inactiveDays >= 30) {
+      await sendPush(userId, "inactivity_30days");
+    } else if (inactiveDays >= 14 && inactiveDays < 30) {
+      await sendPush(userId, "inactivity_14days");
+    } else if (inactiveDays >= 7 && inactiveDays < 14) {
+      await sendPush(userId, "inactivity_7days");
+    } else if (inactiveDays >= 5 && inactiveDays < 7) {
+      await sendPush(userId, "inactivity_5days");
+    } else if (inactiveDays >= 3 && inactiveDays < 5) {
+      await sendPush(userId, "inactivity_3days");
+    } else if (inactiveDays < 3 && habits.avgTransactionsPerWeek >= 3) {
       const lastTxDays = habits.lastTransactionAt
         ? (now - habits.lastTransactionAt) / (1000 * 60 * 60 * 24)
         : 999;
       if (lastTxDays >= 2 && lastTxDays < 4) {
         await sendPush(userId, "habit_deposit_missed");
       }
-    }
-
-    // ── Milestone: première semaine ou premier mois ──────────────────────────
-    else if (
+    } else if (
       habits.totalTransactions >= 5 &&
       habits.totalTransactions < 15 &&
       inactiveDays < 1
     ) {
-      const alreadySent = (notifications.sentCount || 0) === 0;
-      if (alreadySent) await sendPush(userId, "milestone_first_week");
+      await sendPush(userId, "milestone_first_week");
     }
 
     // Petit délai entre chaque user pour éviter les rate limits FCM
@@ -187,9 +268,9 @@ async function analyzeAndNotify() {
 // ── Jobs planifiés ────────────────────────────────────────────────────────────
 function startScheduler() {
   initializeFirebase();
-  
-  // Analyse principale : toutes les 2h
-  cron.schedule("0 */2 * * *", analyzeAndNotify, {
+
+  // Analyse principale : toutes les 2h, decalee des jobs editoriaux.
+  cron.schedule("17 */2 * * *", analyzeAndNotify, {
     timezone: "Africa/Bujumbura",
   });
 

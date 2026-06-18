@@ -297,11 +297,13 @@ function buildNotification(type, fcmToken, data = {}) {
     token: fcmToken,
     notification: { title, body },
     android: {
+      collapseKey: data.notificationId || type,
       priority: "high",
       notification: {
         channelId: "ikigabo_notifications",
         icon: "launcher_icon",
         color: "#6C63FF",
+        tag: data.notificationId || type,
         clickAction: "FLUTTER_NOTIFICATION_CLICK",
       },
     },

@@ -54,6 +54,37 @@ const firestore = admin.firestore();
 const app = express();
 app.use(bodyParser.json());
 
+async function upsertPushUser(deviceId, fcmToken, values) {
+  const duplicates = await firestore
+    .collection("pushUsers")
+    .where("fcmToken", "==", fcmToken)
+    .get();
+
+  const batch = firestore.batch();
+  for (const duplicate of duplicates.docs) {
+    if (duplicate.id === deviceId) continue;
+    batch.set(
+      duplicate.ref,
+      {
+        fcmToken: null,
+        tokenReplacedAt: Date.now(),
+      },
+      { merge: true },
+    );
+  }
+
+  batch.set(
+    firestore.collection("pushUsers").doc(deviceId),
+    {
+      ...values,
+      fcmToken,
+      updatedAt: Date.now(),
+    },
+    { merge: true },
+  );
+  await batch.commit();
+}
+
 // Démarrer le scheduler de notifications
 startScheduler();
 
@@ -160,21 +191,13 @@ app.post("/heartbeat", async (req, res) => {
     if (!deviceId || !fcmToken)
       return res.status(400).json({ error: "deviceId et fcmToken requis" });
 
-    await firestore
-      .collection("pushUsers")
-      .doc(deviceId)
-      .set(
-        {
-          fcmToken,
-          platform: platform || "android",
-          lastActiveAt: lastActiveAt || Date.now(),
-          locale: locale || "fr",
-          habits: habits || {},
-          notificationPreferences: notificationPreferences || {},
-          updatedAt: Date.now(),
-        },
-        { merge: true },
-      );
+    await upsertPushUser(deviceId, fcmToken, {
+      platform: platform || "android",
+      lastActiveAt: lastActiveAt || Date.now(),
+      locale: locale || "fr",
+      habits: habits || {},
+      notificationPreferences: notificationPreferences || {},
+    });
 
     console.log(`💓 Heartbeat reçu: ${deviceId}`);
     res.json({ ok: true });
@@ -192,17 +215,20 @@ app.post("/notification-preferences", async (req, res) => {
       return res.status(400).json({ error: "Parametres manquants" });
     }
 
-    await firestore
-      .collection("pushUsers")
-      .doc(deviceId)
-      .set(
-        {
-          ...(fcmToken ? { fcmToken } : {}),
-          notificationPreferences,
-          updatedAt: Date.now(),
-        },
-        { merge: true },
-      );
+    if (fcmToken) {
+      await upsertPushUser(deviceId, fcmToken, { notificationPreferences });
+    } else {
+      await firestore
+        .collection("pushUsers")
+        .doc(deviceId)
+        .set(
+          {
+            notificationPreferences,
+            updatedAt: Date.now(),
+          },
+          { merge: true },
+        );
+    }
 
     console.log(`⚙️ Preferences notifications mises a jour: ${deviceId}`);
     res.json({ ok: true });
@@ -218,10 +244,7 @@ app.post("/update-token", async (req, res) => {
     if (!deviceId || !fcmToken)
       return res.status(400).json({ error: "Paramètres manquants" });
 
-    await firestore
-      .collection("pushUsers")
-      .doc(deviceId)
-      .set({ fcmToken, updatedAt: Date.now() }, { merge: true });
+    await upsertPushUser(deviceId, fcmToken, {});
 
     console.log(`🔄 Token FCM mis à jour: ${deviceId}`);
     res.json({ ok: true });
